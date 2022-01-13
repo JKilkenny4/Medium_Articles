@@ -1,0 +1,254 @@
+---
+title: "Medium DS Article Analysis"
+author: "Jack Kilkenny"
+date: "1/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Importing dataset and libraries
+library(readr)
+library(tidyverse)
+library(Hmisc)
+library(psych)
+df <- read_csv("Documents/Projects/Medium DS Articles/medium-data-science-articles-2021.csv")
+View(df)
+
+```
+
+
+```{r}
+# Descriptives
+head(df)
+length(df)
+nrow(df)
+
+describe(df)
+
+length(unique(df[['author']])) #Interesting that there are only 22570 different authors -- will want to investigate number of articles per author
+
+length(unique(df[['title']])) 
+nrow(df) - length(unique(df[['title']])) #Also interesting that there are 917 duplicate titles
+
+table(df$tag)
+
+```
+
+```{r}
+### Some preliminary questions to answer based on these descriptives
+# 1. Who are the authors with the most number of articles?
+# 2. Are the highest content producing authors also getting the most claps / responses?
+# 3. Are there differences in claps / responses based on tag?
+# 4. Any correlation between reading time and claps / responses
+# 5. What are these duplicate titles?
+# 6. Anything in common among the top 10% of articles?
+```
+
+```{r}
+# 1. Who are the authors with the most number of articles?
+df_authors_count <- aggregate(df$author, list(df$author), length)
+
+#assigning ranks
+df_authors_count$author_rank <- rank(-df_authors_count$x, ties.method = "max")
+table(df_authors_count$author_rank)
+top_n(df_authors_count, 10, x)
+
+#merging back with original data
+df_authors_count <- df_authors_count %>%
+  rename(author_article_count = x) #Quick renaming of columns here before merge back
+df_authors_count <- df_authors_count %>%
+  rename(author = Group.1)
+
+df <- merge(df, df_authors_count, all.x=TRUE)
+View(df)
+
+#A quick visual scan of the makes it look like the top 3 just publish sports data every day
+aggregate(claps~author_rank, FUN=sum, data=df, na.rm=FALSE) #Looks like high volume but low impact
+```
+
+```{r}
+# 2. Are the highest content producing authors also getting the most claps / responses?
+corr.test(df$claps, df$responses) #Only a moderate correlation between the two so will treat separately
+
+# Will repeat a similar process for clips and responses as we did for article volume
+# Claps first
+df_authors_claps <- aggregate(claps~author, FUN=sum, data=df, na.rm=FALSE)
+df_authors_claps$author_claps_rank <- rank(-df_authors_claps$claps, ties.method = "max")
+
+top_n(df_authors_claps, 10, claps)
+
+df_authors_claps <- df_authors_claps %>%
+  rename(author_claps = claps)
+
+df <- merge(df, df_authors_claps, all.x=TRUE) #Will later create a single table of just authors but wanted to add it back to the original df for the sake of retention and in case it's necessary later
+
+#Responses second
+df_authors_responses <- aggregate(responses~author, FUN=sum, data=df, na.rm=FALSE)
+df_authors_responses$author_response_rank <- rank(-df_authors_responses$responses, ties.method = "max")
+
+top_n(df_authors_responses, 10, responses)
+
+df_authors_responses <- df_authors_responses %>%
+  rename(author_responses = responses)
+
+df <- merge(df, df_authors_responses, all.x=TRUE)
+
+#Creating a single author table
+df_authors <- merge(merge(df_authors_count, df_authors_claps), df_authors_responses)
+cor(df_authors[, c(3, 5, 7)], method = 'spearman') #So it looks like volume has very little correlation with claps or response ranks, though claps and responses remain that same moderate correlation we saw earlier overall
+#Quick note on why rank was used here as opposed to raw value -- we have three extremely high volume authors who seemingly get no interactions whatsoever -- using the raw values would give these three a lot of influence since they are such wild outliers, whereas using rank minimizes their weight relative to the rest of the sample; also it allowed for the use something other than a straightforward Pearson correlation
+```
+
+```{r}
+# 3. Are there differences in claps / responses based on tag?
+aggregate(claps~tag, FUN=function(x) c(mean = mean(x), sd = sd(x), length(x)), data=df) # For some reason this does not print in the notebook, but it does appear properly when copy/pasted into the console? In any case, means look like they may be different but HIGH variance!
+
+summary(aov(claps~tag, df))
+TukeyHSD(aov(claps~tag, df))
+plot(TukeyHSD(aov(claps~tag, df)), las = 1)
+
+ggplot(data=df, mapping=aes(x=tag, y=claps)) + 
+  stat_summary(fun.data=mean_sdl, geom="bar")
+
+aggregate(responses~tag, FUN=function(x) c(mean = mean(x), sd = sd(x), length(x)), data=df)
+summary(aov(responses~tag, df))
+TukeyHSD(aov(responses~tag, df))
+plot(TukeyHSD(aov(responses~tag, df)), las = 1)
+
+ggplot(data=df, mapping=aes(x=tag, y=responses)) + 
+  stat_summary(fun.data=mean_sdl, geom="bar")
+
+#In sum, yes, there are some significant differences in claps and responses by tag
+#Looking at CLAPS: 'Artificial Inteligence' and 'Data Science' are really strong performers, whereas 'Analytics' and 'Big Data' perform poorly
+#Looking at RESPONSES: see a similar trend as above
+
+##FOLLOW UP QUESTION -- looks like there may be some tags that are polarizing -- generating few claps but lots of response (and vice versa); compute difference between means on these two metrics?
+#Creating tag metrics df - columns will just be means
+df_tag_metrics <- merge(
+  x = aggregate(claps~tag, FUN=mean, data=df), 
+  y = aggregate(responses~tag, FUN=mean, data=df),
+      all.x = TRUE)
+
+#Normalizing mean columns
+df_tag_metrics$claps.z <- (df_tag_metrics$claps - mean(df_tag_metrics$claps)) / sd(df_tag_metrics$claps)
+df_tag_metrics$responses.z <- (df_tag_metrics$responses - mean(df_tag_metrics$responses)) / sd(df_tag_metrics$responses)
+
+df_tag_metrics$claps_responses_diff <- df_tag_metrics$claps.z - df_tag_metrics$responses.z
+df_tag_metrics
+
+ggplot(data=df_tag_metrics, mapping=aes(x=tag, y=claps_responses_diff)) + 
+  stat_summary(fun.data=mean_sdl, geom="bar")
+
+#In sum, looks like 'Deep learning' and 'Machine learning' generally get more claps than responses
+#However, 'Data Science' and 'Data' garner more responses than claps, meaning they're likely provacative topics among Medium readers (though the valence is unknown)
+```
+
+```{r}
+# 4. Any correlation between reading time and claps / responses
+psych::describe(df$reading_time) #Just wanted to see again the range and variance here
+table(df$reading_time) #Unsurprisingly, the vast majority cluster in the 0 to 10 minute range
+
+#Going to winsorize here -- rule is typically 2.5 to 3 SDs above the mean, but I'm going to do this two ways -- one will be exact and the other will be a rougher, rounded approach
+#Rounded winsorizing, mean = 5, SD = 4, so reduce outliers to 21 minutes
+df$rt_rough_winz <- ifelse(df$reading_time > 21, 21, df$reading_time)
+
+#Exact winsorizing, mean = 5.13, SD = 3.76, so reduce outliers to 16.5 minutes
+df$rt_exact_winz <- ifelse(df$reading_time > 16.40879, 16.5, df$reading_time)
+
+#Correlations
+cor(df$reading_time, df$claps)
+cor(df$reading_time, df$responses)
+
+cor(df$rt_rough_winz, df$claps)
+cor(df$rt_rough_winz, df$responses)
+
+cor(df$rt_exact_winz, df$claps)
+cor(df$rt_exact_winz, df$responses)
+
+#Will take a quick look by tag too
+aggregate(rt_exact_winz~tag, FUN=mean, data=df, na.rm=FALSE)
+summary(aov(rt_exact_winz~tag, df))
+TukeyHSD(aov(rt_exact_winz~tag, df))
+
+ggplot(data=df, mapping=aes(x=tag, y=rt_exact_winz)) + 
+  stat_summary(fun.data=mean_sdl, geom="bar")
+
+```
+
+
+```{r}
+# 5. What are these duplicate titles?
+df_dup_titles <- subset(df, duplicated(df$title) | duplicated(df$title, fromLast = TRUE))
+nrow(df_dup_titles)
+
+table(df_dup_titles$title) #So it looks like there are a lot of doubles but also a lot of instances where there are 3+ instances of the same title
+View(df_dup_titles) #Similarly, a quick visual scan looks like there are some instances where the same author has posted multiple of the same article, but also a lot of reposts with different authors too
+
+table(df_dup_titles$author)
+
+sum(table(df_dup_titles$author)-1)
+nrow(df_dup_titles) - length(unique(df_dup_titles[,"author"])) #Looks like we have 818 different authors and 661 re-posters in this sample of duplicate articles
+
+df_dup_titles %>%
+  group_by(author) %>%
+  count(unique(author)) %>%
+  arrange(desc(n)) # A couple of really serial offenders here
+
+#Looking at date published here
+df_dup_titles <- df_dup_titles %>% arrange(title, date) %>%
+    group_by(title) %>% 
+    mutate(date_rank = rank(date))
+
+aggregate(claps~date_rank, FUN=function(x) c(mean = mean(x), sd = sd(x), length(x)), data=df_dup_titles) #Looks like the number of times a title is recycled tends to drop off after the 4th time, so going to recode and run again
+
+df_dup_titles$date_rank_winz <- ifelse(df_dup_titles$date_rank > 4, 4, df_dup_titles$date_rank)
+
+aggregate(claps~date_rank, FUN=function(x) c(mean = mean(x), sd = sd(x), length(x)), data=df_dup_titles) #So while not perfectly diminishing returns, it looks like the average number of claps does drop by nearly half after an article has been re-published
+
+ggplot(data=df_dup_titles, mapping=aes(x=date_rank_winz, y=claps)) + 
+  stat_summary(fun.data=mean_sdl, geom="bar")
+
+```
+
+
+```{r}
+# 6. Anything in common among the top 10% of articles?
+#Going to operationalize this as top 10% of claps
+quantile(df$claps, prob=c(.1, .25, .5, .75, .9))
+
+df_top_claps <- df %>%
+  filter(claps > quantile(claps, prob=.9))
+psych::describe(df_top_claps$claps) #Just to confirm the above filter worked
+
+psych::describe(df_top_claps$responses) #Looks like this group gets more responses too (not surprising)
+
+#Adding percentile rank column to df (probably should have done this at the outset)
+df$percentile_claps <- rank(df$claps)/length(df$claps)
+df$percentile_claps_top10 <- ifelse(df$percentile_claps > .9, "top 10%", "bottom 90%")
+
+t.test(responses ~ percentile_claps_top10, data = df) #yup, significant difference in responses
+
+#How many different authors are in this top 10%? Looks like we have a lot of folks that have written multiple top tier articles
+nrow(df_top_claps)
+length(unique(df_top_claps[['author']])) 
+nrow(df_top_claps) - length(unique(df_top_claps[['author']]))
+
+sum(table(df_top_claps$author)-1) #another way of finding the number of duplicate authors in the data
+
+df_top_claps %>%
+  group_by(author) %>%
+  count(unique(author)) %>%
+  arrange(desc(n))
+
+#Do we have any duplicate articles in the top 10? 
+df_top_claps %>%
+  group_by(title) %>%
+  count(unique(title)) %>%
+  arrange(desc(n)) #Only a handful
+
+```
+
